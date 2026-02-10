@@ -42,7 +42,8 @@ def get_schema_info() -> str:
         sample_query = f"SELECT * FROM {table_name} LIMIT 3"
         samples = conn.execute(sample_query).fetchdf()
         if not samples.empty:
-            schema_info.append(f"  Sample rows: {len(conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone()[0])} total")
+            row_count = conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone()[0]
+            schema_info.append(f"  Total rows: {row_count}")
 
     conn.close()
     return "\n\n".join(schema_info)
