@@ -8,6 +8,7 @@ import operator
 from .sql_agent import SQLAgent, QueryAnalyzer
 from .visualization_agent import VisualizationAgent
 from .prediction_agent import PredictionAgent, TrendAnalyzer
+from .guardrails import QueryGuardrails, ResponseEnhancer
 from ..data.database import get_schema_info, execute_query
 
 
@@ -27,6 +28,10 @@ class AgentState(TypedDict):
     insights: str | None
     response: str | None
     messages: Annotated[list, operator.add]
+    # Guardrails fields
+    is_relevant: bool
+    relevance_reason: str | None
+    suggested_tables: list | None
 
 
 class DataAgent:
@@ -39,6 +44,8 @@ class DataAgent:
         self.viz_agent = VisualizationAgent(model_name)
         self.prediction_agent = PredictionAgent(model_name)
         self.trend_analyzer = TrendAnalyzer()
+        self.guardrails = QueryGuardrails(model_name)
+        self.response_enhancer = ResponseEnhancer(model_name)
 
         # Build the workflow graph
         self.workflow = self._build_workflow()
@@ -49,6 +56,7 @@ class DataAgent:
 
         # Add nodes
         workflow.add_node("analyze_query", self._analyze_query)
+        workflow.add_node("check_relevance", self._check_relevance)
         workflow.add_node("generate_sql", self._generate_sql)
         workflow.add_node("execute_query", self._execute_query)
         workflow.add_node("create_visualization", self._create_visualization)
@@ -58,7 +66,17 @@ class DataAgent:
 
         # Define edges
         workflow.set_entry_point("analyze_query")
-        workflow.add_edge("analyze_query", "generate_sql")
+        workflow.add_edge("analyze_query", "check_relevance")
+
+        # Route based on query relevance
+        workflow.add_conditional_edges(
+            "check_relevance",
+            self._route_after_relevance,
+            {
+                "relevant": "generate_sql",
+                "irrelevant": "compose_response",
+            }
+        )
         workflow.add_edge("generate_sql", "execute_query")
 
         # Conditional routing after query execution
@@ -93,6 +111,27 @@ class DataAgent:
             "schema": schema,
             "messages": [f"Analyzing query: {state['question']}"],
         }
+
+    def _check_relevance(self, state: AgentState) -> AgentState:
+        """Check if the question is relevant to available data."""
+        relevance = self.guardrails.check_query_relevance(
+            state["question"],
+            state["schema"]
+        )
+
+        return {
+            **state,
+            "is_relevant": relevance["is_relevant"],
+            "relevance_reason": relevance["reason"],
+            "suggested_tables": relevance["suggested_tables"],
+            "messages": [f"Query relevance: {relevance['confidence']} - {relevance['reason']}"],
+        }
+
+    def _route_after_relevance(self, state: AgentState) -> str:
+        """Route based on query relevance."""
+        if not state.get("is_relevant", True):
+            return "irrelevant"
+        return "relevant"
 
     def _generate_sql(self, state: AgentState) -> AgentState:
         """Generate SQL from the question."""
@@ -249,6 +288,14 @@ class DataAgent:
         """Compose the final response."""
         parts = []
 
+        # Handle irrelevant queries
+        if not state.get("is_relevant", True):
+            response = self.guardrails.handle_irrelevant_query(state["question"])
+            return {
+                **state,
+                "response": response,
+            }
+
         # Handle errors
         if state.get("sql_error"):
             parts.append(f"**Error:** {state['sql_error']}")
@@ -259,8 +306,14 @@ class DataAgent:
             if state.get("sql_query"):
                 parts.append(f"**Query:**\n```sql\n{state['sql_query']}\n```")
 
-            # Show data summary
-            if state.get("data") is not None and not state["data"].empty:
+            # Handle empty results with helpful message
+            if state.get("data") is not None and state["data"].empty:
+                helpful_message = self.guardrails.handle_empty_result(
+                    state["question"],
+                    state.get("sql_query", "")
+                )
+                parts.append(f"\n{helpful_message}")
+            elif state.get("data") is not None:
                 df = state["data"]
                 parts.append(f"\n**Results:** {len(df)} rows returned")
 
@@ -273,7 +326,13 @@ class DataAgent:
 
             # Show insights
             if state.get("insights"):
-                parts.append(f"\n{state['insights']}")
+                # Enhance the response with additional context
+                enhanced_insights = self.response_enhancer.enhance_response(
+                    state["question"],
+                    state.get("data"),
+                    state["insights"]
+                )
+                parts.append(f"\n{enhanced_insights}")
 
         return {
             **state,
@@ -297,6 +356,10 @@ class DataAgent:
             "insights": None,
             "response": None,
             "messages": [],
+            # Guardrails fields
+            "is_relevant": True,
+            "relevance_reason": None,
+            "suggested_tables": None,
         }
 
         result = self.workflow.invoke(initial_state)
