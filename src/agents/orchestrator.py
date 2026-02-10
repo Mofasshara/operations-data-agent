@@ -10,6 +10,74 @@ from .visualization_agent import VisualizationAgent
 from .prediction_agent import PredictionAgent, TrendAnalyzer
 from .guardrails import QueryGuardrails, ResponseEnhancer
 from ..data.database import get_schema_info, execute_query
+import re
+
+
+# Data source mapping
+DATA_SOURCES = {
+    # Yahoo Finance tables
+    'stock_prices': {
+        'name': 'Yahoo Finance',
+        'url': 'https://finance.yahoo.com',
+        'description': 'Real-time stock data'
+    },
+    'companies': {
+        'name': 'Yahoo Finance',
+        'url': 'https://finance.yahoo.com',
+        'description': 'Company information'
+    },
+    'company_financials': {
+        'name': 'Yahoo Finance',
+        'url': 'https://finance.yahoo.com',
+        'description': 'Quarterly financials'
+    },
+    'market_indices': {
+        'name': 'Yahoo Finance',
+        'url': 'https://finance.yahoo.com',
+        'description': 'Market indices (S&P 500, Dow Jones, etc.)'
+    },
+    'sector_performance': {
+        'name': 'Yahoo Finance',
+        'url': 'https://finance.yahoo.com',
+        'description': 'Sector ETF performance'
+    },
+    'currency_rates': {
+        'name': 'Yahoo Finance',
+        'url': 'https://finance.yahoo.com',
+        'description': 'Currency exchange rates'
+    },
+    'commodities': {
+        'name': 'Yahoo Finance',
+        'url': 'https://finance.yahoo.com',
+        'description': 'Commodity and crypto prices'
+    },
+    # Synthetic data tables
+    'customers': {
+        'name': 'Synthetic Data',
+        'url': None,
+        'description': 'Generated with Faker library'
+    },
+    'products': {
+        'name': 'Synthetic Data',
+        'url': None,
+        'description': 'Generated with Faker library'
+    },
+    'sales': {
+        'name': 'Synthetic Data',
+        'url': None,
+        'description': 'Generated with Faker library'
+    },
+    'sales_reps': {
+        'name': 'Synthetic Data',
+        'url': None,
+        'description': 'Generated with Faker library'
+    },
+    'monthly_metrics': {
+        'name': 'Synthetic Data',
+        'url': None,
+        'description': 'Generated with Faker library'
+    },
+}
 
 
 class AgentState(TypedDict):
@@ -32,6 +100,48 @@ class AgentState(TypedDict):
     is_relevant: bool
     relevance_reason: str | None
     suggested_tables: list | None
+
+
+def get_data_sources_from_sql(sql_query: str) -> list:
+    """Extract data sources from SQL query."""
+    if not sql_query:
+        return []
+
+    sql_lower = sql_query.lower()
+    sources = []
+    seen_sources = set()
+
+    for table, info in DATA_SOURCES.items():
+        # Check if table appears in FROM or JOIN clauses
+        if re.search(rf'\b{table}\b', sql_lower):
+            source_key = info['name']
+            if source_key not in seen_sources:
+                seen_sources.add(source_key)
+                sources.append(info)
+
+    return sources
+
+
+def format_source_attribution(sources: list) -> str:
+    """Format source attribution for display."""
+    if not sources:
+        return ""
+
+    parts = ["**Data Sources:**"]
+    seen = set()
+
+    for source in sources:
+        name = source['name']
+        if name in seen:
+            continue
+        seen.add(name)
+
+        if source['url']:
+            parts.append(f"- [{name}]({source['url']}) - {source['description']}")
+        else:
+            parts.append(f"- {name} - {source['description']}")
+
+    return "\n".join(parts)
 
 
 class DataAgent:
@@ -333,6 +443,13 @@ class DataAgent:
                     state["insights"]
                 )
                 parts.append(f"\n{enhanced_insights}")
+
+            # Add data source attribution
+            if state.get("sql_query") and state.get("data") is not None and not state["data"].empty:
+                sources = get_data_sources_from_sql(state["sql_query"])
+                if sources:
+                    source_text = format_source_attribution(sources)
+                    parts.append(f"\n---\n{source_text}")
 
         return {
             **state,
